@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% block title %}Working Mode — AutoAttend{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>✅ Working Mode</h1>
+    <p class="subtitle">Automatic attendance scanning — faces are matched and marked in real-time</p>
+</div>
+
+<!-- Time Slot Banner -->
+<div id="time-slot-banner" role="group" aria-label="Attendance time window" class="time-slot-banner outside">
+    <div class="slot-icon">⏰</div>
+    <div class="slot-info">
+        <div class="slot-label" id="slot-label" role="status" aria-live="off">Checking time window...</div>
+        <div class="slot-sub" id="slot-sub"></div>
+    </div>
+    <div class="slot-countdown" id="slot-countdown"></div>
+    <div class="slot-actions">
+        <button id="btn-force" type="button" aria-pressed="false" class="btn btn-outline btn-sm" onclick="toggleForceScan()">
+            ⚡ Force Scan
+        </button>
+    </div>
+</div>
+
+<div class="working-layout">
+    <!-- Left: Camera Feed -->
+    <div class="camera-section">
+        <div class="camera-container">
+            <video id="camera-video" autoplay playsinline muted aria-label="Live camera preview used for face recognition"></video>
+            <canvas id="camera-canvas" style="display: none;"></canvas>
+            <img id="annotated-image" class="annotated-overlay" style="display: none;" alt="Detected faces">
+            <!-- Scanning indicator -->
+            <div id="scan-indicator" aria-hidden="true" class="scan-indicator" style="display: none;">
+                <div class="scan-pulse"></div>
+                <span>SCANNING</span>
+            </div>
+            <!-- Paused overlay -->
+            <div id="paused-overlay" aria-hidden="true" class="paused-overlay" style="display: none;">
+                <div class="paused-text">⏸ WAITING FOR WINDOW</div>
+                <div class="paused-sub" id="paused-countdown"></div>
+            </div>
+        </div>
+
+        <div class="camera-controls">
+            <button id="btn-start" class="btn btn-success btn-block" onclick="handleStart()">
+                ▶️ Start Auto-Scan
+            </button>
+            <button id="btn-stop" class="btn btn-danger btn-block" onclick="handleStopWorking()" style="display: none;">
+                ⏹ Stop Scanning
+            </button>
+        </div>
+
+        <div id="camera-status" class="status info" role="status" aria-live="polite" aria-atomic="true">
+            Click "Start Auto-Scan" to begin — scanning activates automatically during time windows
+        </div>
+
+        <div id="scan-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+        <!-- Scan Result (current frame) -->
+        <div id="scan-result" class="scan-result-compact" aria-label="Face scan results"></div>
+    </div>
+
+    <!-- Right: Live Attendance Log -->
+    <div class="attendance-log-section">
+        <!-- Current Slot Stats -->
+        <div class="slot-stats">
+            <div class="slot-stat-card">
+                <div class="slot-stat-value" id="marked-count">0</div>
+                <div class="slot-stat-label">Marked This Slot</div>
+            </div>
+            <div class="slot-stat-card">
+                <div class="slot-stat-value" id="total-registered">0</div>
+                <div class="slot-stat-label">Total Registered</div>
+            </div>
+            <div class="slot-stat-card">
+                <div class="slot-stat-value" id="faces-scanned">0</div>
+                <div class="slot-stat-label">Faces Scanned</div>
+            </div>
+        </div>
+
+        <!-- Time Windows Overview -->
+        <div class="windows-mini">
+            <h3>⏰ Today's Windows</h3>
+            <div class="windows-mini-grid" id="windows-mini-grid"></div>
+        </div>
+
+        <!-- Live Attendance Feed -->
+        <div class="live-feed">
+            <h3>📋 Live Attendance Feed</h3>
+            <div class="feed-list" id="feed-list">
+                <div class="feed-empty">
+                    No attendance recorded yet. Start scanning to begin.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // ─── State ───────────────────────────────────────
+    let isRunning = false;
+    let cameraReady = false;
+    let facesScannedCount = 0;
+    let isForceScan = false;
+    let wasInWindow = false;
+    const feedEntries = [];
+
+    initCamera("camera-video", "camera-canvas", "camera-status", "scan-result", "annotated-image");
+
+    // ─── Time Status Polling ─────────────────────────
+    async function checkTimeStatus() {
+        try {
+            const resp = await fetch("/api/time-status");
+            const data = await resp.json();
+            const banner = document.getElementById("time-slot-banner");
+            const label = document.getElementById("slot-label");
+            const sub = document.getElementById("slot-sub");
+            const countdown = document.getElementById("slot-countdown");
+
+            isForceScan = data.force_scan;
+            updateForceButton();
+
+            // Update windows mini grid
+            const grid = document.getElementById("windows-mini-grid");
+            grid.innerHTML = data.windows.map(w => `
+                <div class="window-mini ${w.status}">
+                    <span class="wm-time">${w.label}</span>
+                    <span class="wm-dot ${w.status}"></span>
+                </div>
+            `).join("");
+
+            if (data.in_window) {
+                banner.className = "time-slot-banner active";
+                label.textContent = `🟢 Active: ${data.current_slot}`;
+                sub.textContent = "Attendance is being recorded";
+                countdown.textContent = data.remaining_display ? `${data.remaining_display} left` : "";
+
+                // Auto-start scanning if camera is ready and not already running
+                if (cameraReady && !isRunning) {
+                    activateScanning();
+                }
+                wasInWindow = true;
+
+            } else if (isForceScan) {
+                banner.className = "time-slot-banner active";
+                label.textContent = "⚡ Force Scan Active";
+                sub.textContent = "Time window check bypassed";
+                countdown.textContent = "";
+
+                if (cameraReady && !isRunning) {
+                    activateScanning();
+                }
+
+            } else {
+                // Auto-stop scanning when window ends
+                if (wasInWindow && isRunning) {
+                    deactivateScanning();
+                    addFeedEntry("info", "⏰ Time window ended", "Scanning paused");
+                    wasInWindow = false;
+                }
+
+                if (data.next_window_label) {
+                    banner.className = "time-slot-banner upcoming";
+                    label.textContent = `⏳ Next: ${data.next_window_label}`;
+                    sub.textContent = "Scanning will activate automatically";
+                    countdown.textContent = data.until_next_display ? `in ${data.until_next_display}` : "";
+
+                    // Show countdown on paused overlay
+                    document.getElementById("paused-countdown").textContent =
+                        data.until_next_display ? `Next window in ${data.until_next_display}` : "";
+                } else {
+                    banner.className = "time-slot-banner outside";
+                    label.textContent = "No more scanning windows today";
+                    sub.textContent = "All time slots have ended";
+                    countdown.textContent = "";
+                }
+            }
+
+            // Update stats
+            const statsResp = await fetch("/api/stats");
+            const stats = await statsResp.json();
+            document.getElementById("total-registered").textContent = stats.total_students;
+            if (data.in_window && data.current_slot) {
+                const slotStat = stats.slot_stats.find(s => s.time_slot === data.current_slot);
+                document.getElementById("marked-count").textContent = slotStat ? slotStat.count : 0;
+            }
+
+        } catch (err) {
+            console.error(err);
+        }
+    }
+
+    checkTimeStatus();
+    setInterval(checkTimeStatus, 2000);
+
+    // ─── Force Scan Toggle ───────────────────────────
+
+    async function toggleForceScan() {
+        try {
+            const resp = await fetch("/api/force-scan", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: !isForceScan })
+            });
+            const data = await resp.json();
+            isForceScan = data.force_scan;
+            updateForceButton();
+            showFlash(data.message, isForceScan ? "success" : "info");
+
+            if (isForceScan && cameraReady && !isRunning) {
+                activateScanning();
+            } else if (!isForceScan) {
+                checkTimeStatus();
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    }
+
+    function updateForceButton() {
+        const btn = document.getElementById("btn-force");
+        if (isForceScan) {
+            btn.textContent = "⚡ Force ON";
+            btn.className = "btn btn-warning btn-sm";
+            btn.setAttribute("aria-pressed", "true");
+        } else {
+            btn.textContent = "⚡ Force Scan";
+            btn.className = "btn btn-outline btn-sm";
+            btn.setAttribute("aria-pressed", "false");
+        }
+    }
+
+    // ─── Start/Stop ──────────────────────────────────
+
+    async function handleStart() {
+        await switchMode("working");
+        const success = await startCamera();
+        if (!success) return;
+
+        cameraReady = true;
+        document.getElementById("btn-start").style.display = "none";
+        document.getElementById("btn-stop").style.display = "block";
+
+        // Check if we should start scanning immediately
+        checkTimeStatus();
+    }
+
+    function activateScanning() {
+        if (isRunning) return;
+        isRunning = true;
+        startScanning(1000);
+        document.getElementById("scan-indicator").style.display = "flex";
+        document.getElementById("paused-overlay").style.display = "none";
+        setStatus("🔍 Scanning active — detecting faces every second", "success");
+    }
+
+    function deactivateScanning() {
+        if (!isRunning) return;
+        stopScanning();
+        isRunning = false;
+        document.getElementById("scan-indicator").style.display = "none";
+        document.getElementById("annotated-image").style.display = "none";
+        if (cameraReady) {
+            document.getElementById("paused-overlay").style.display = "flex";
+        }
+        setStatus("⏸ Scanning paused — waiting for next time window", "info");
+    }
+
+    function handleStopWorking() {
+        stopCamera();
+        isRunning = false;
+        cameraReady = false;
+
+        document.getElementById("btn-start").style.display = "block";
+        document.getElementById("btn-stop").style.display = "none";
+        document.getElementById("scan-indicator").style.display = "none";
+        document.getElementById("paused-overlay").style.display = "none";
+        document.getElementById("annotated-image").style.display = "none";
+    }
+
+    // ─── Handle Scan Results ─────────────────────────
+
+    document.addEventListener("scanResult", function(e) {
+        const result = e.detail;
+
+        if (result.status === "marked") {
+            facesScannedCount++;
+            document.getElementById("faces-scanned").textContent = facesScannedCount;
+            addFeedEntry("marked", `✅ ${result.student.name} (${result.student.roll_no})`, `${result.confidence}% match`);
+            const el = document.getElementById("marked-count");
+            el.textContent = parseInt(el.textContent) + 1;
+
+        } else if (result.status === "already_marked") {
+            facesScannedCount++;
+            document.getElementById("faces-scanned").textContent = facesScannedCount;
+            addFeedEntry("already", `ℹ️ ${result.student.name} (${result.student.roll_no})`, "Already marked");
+
+        } else if (result.status === "no_match") {
+            facesScannedCount++;
+            document.getElementById("faces-scanned").textContent = facesScannedCount;
+
+        } else if (result.status === "multiple_faces") {
+            document.getElementById("scan-result").innerHTML =
+                `<p class="multiple-faces">👥 ${result.message}</p>`;
+
+        } else if (result.status === "outside_window") {
+            if (!isForceScan) {
+                deactivateScanning();
+            }
+        }
+    });
+
+    // ─── Live Feed ───────────────────────────────────
+
+    function addFeedEntry(type, text, detail) {
+        const time = new Date().toLocaleTimeString();
+        feedEntries.unshift({ type, text, detail, time });
+        if (feedEntries.length > 50) feedEntries.pop();
+        renderFeed();
+    }
+
+    function renderFeed() {
+        const list = document.getElementById("feed-list");
+        if (feedEntries.length === 0) {
+            list.innerHTML = '<div class="feed-empty">No attendance recorded yet.</div>';
+            return;
+        }
+
+        list.innerHTML = feedEntries.map(e => `
+            <div class="feed-entry feed-${e.type}">
+                <span class="feed-text">${e.text}</span>
+                <span class="feed-detail">${e.detail}</span>
+                <span class="feed-time">${e.time}</span>
+            </div>
+        `).join("");
+    }
+</script>
+{% endblock %}

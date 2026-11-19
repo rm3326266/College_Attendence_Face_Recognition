@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block title %}Maintenance — AutoAttend{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>🔧 Maintenance Mode</h1>
+    <p class="subtitle">Register new students or verify existing ones via camera</p>
+</div>
+
+<div class="maintenance-layout">
+    <!-- Left: Camera Feed -->
+    <div class="camera-section">
+        <div class="camera-container">
+            <video id="camera-video" autoplay playsinline muted aria-label="Live camera preview used for face recognition"></video>
+            <canvas id="camera-canvas" style="display: none;"></canvas>
+            <!-- Annotated result overlay -->
+            <img id="annotated-image" class="annotated-overlay" style="display: none;" alt="Detected face">
+        </div>
+
+        <div class="camera-controls">
+            <button id="btn-start-camera" class="btn btn-primary" onclick="handleStartCamera()">
+                📷 Start Camera
+            </button>
+            <button id="btn-scan" class="btn btn-success" onclick="handleSingleScan()" disabled>
+                🔍 Scan Face
+            </button>
+            <button id="btn-auto-scan" type="button" aria-pressed="false" class="btn btn-outline" onclick="handleAutoScan()" disabled>
+                ⚡ Auto Scan
+            </button>
+            <button id="btn-stop" class="btn btn-danger" onclick="handleStop()" disabled>
+                ⏹ Stop
+            </button>
+        </div>
+
+        <div id="camera-status" class="status info" role="status" aria-live="polite" aria-atomic="true">
+            Click "Start Camera" to begin
+        </div>
+    </div>
+
+    <!-- Right: Result + Registration Form -->
+    <div class="result-section">
+        <div id="scan-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+        <!-- Scan Result Display -->
+        <div id="scan-result" class="scan-result" aria-label="Face scan results">
+            <div class="placeholder-message">
+                <span class="placeholder-icon">👤</span>
+                <p>Scan a face to see results here</p>
+            </div>
+        </div>
+
+        <!-- Registration Form (hidden until new face detected) -->
+        <div id="registration-form" class="registration-form" role="region" aria-labelledby="register-heading" style="display: none;">
+            <h3 id="register-heading" tabindex="-1">📝 Register New Student</h3>
+            <form onsubmit="handleRegister(event)">
+                <div class="form-group">
+                    <label for="reg-name">Full Name *</label>
+                    <input type="text" id="reg-name" placeholder="e.g. Rahul Sharma" required>
+                </div>
+                <div class="form-group">
+                    <label for="reg-roll">Roll Number *</label>
+                    <input type="text" id="reg-roll" placeholder="e.g. 2024CS001" required>
+                </div>
+                <div class="form-group">
+                    <label for="reg-branch">Branch *</label>
+                    <select id="reg-branch" required>
+                        <option value="">Select Branch</option>
+                        <option value="CSE">CSE</option>
+                        <option value="ECE">ECE</option>
+                        <option value="EEE">EEE</option>
+                        <option value="ME">ME</option>
+                        <option value="CE">CE</option>
+                        <option value="IT">IT</option>
+                        <option value="AIDS">AI&DS</option>
+                        <option value="AIML">AI&ML</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="reg-section">Section</label>
+                        <input type="text" id="reg-section" placeholder="e.g. A" maxlength="2">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-semester">Semester</label>
+                        <select id="reg-semester">
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3" selected>3</option>
+                            <option value="4">4</option>
+                            <option value="5">5</option>
+                            <option value="6">6</option>
+                            <option value="7">7</option>
+                            <option value="8">8</option>
+                        </select>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block" id="btn-register">
+                    ✅ Register Student
+                </button>
+            </form>
+        </div>
+
+        <!-- Registered Students Count -->
+        <div class="info-bar" id="info-bar">
+            <span>📊 Registered: <strong id="student-count">-</strong> students</span>
+            <span>🧠 Known faces: <strong id="face-count">-</strong></span>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // ─── Initialize ──────────────────────────────────────
+    let cameraStarted = false;
+    let autoScanning = false;
+
+    initCamera("camera-video", "camera-canvas", "camera-status", "scan-result", "annotated-image");
+    loadCounts();
+
+    // ─── Camera Controls ─────────────────────────────────
+
+    async function handleStartCamera() {
+        const success = await startCamera();
+        if (success) {
+            cameraStarted = true;
+            document.getElementById("btn-start-camera").disabled = true;
+            document.getElementById("btn-scan").disabled = false;
+            document.getElementById("btn-auto-scan").disabled = false;
+            document.getElementById("btn-stop").disabled = false;
+        }
+    }
+
+    function handleSingleScan() {
+        if (!cameraStarted) return;
+        // Hide annotated overlay to show live feed, then scan
+        document.getElementById("annotated-image").style.display = "none";
+        scanOnce();
+    }
+
+    function handleAutoScan() {
+        if (autoScanning) {
+            stopScanning();
+            autoScanning = false;
+            document.getElementById("btn-auto-scan").textContent = "⚡ Auto Scan";
+            document.getElementById("btn-auto-scan").setAttribute("aria-pressed", "false");
+            document.getElementById("btn-auto-scan").classList.remove("btn-warning");
+            document.getElementById("btn-auto-scan").classList.add("btn-outline");
+            setStatus("Auto-scan stopped.", "info");
+        } else {
+            document.getElementById("annotated-image").style.display = "none";
+            startScanning(1500);
+            autoScanning = true;
+            document.getElementById("btn-auto-scan").textContent = "⏸ Pause Scan";
+            document.getElementById("btn-auto-scan").classList.remove("btn-outline");
+            document.getElementById("btn-auto-scan").setAttribute("aria-pressed", "true");
+            document.getElementById("btn-auto-scan").classList.add("btn-warning");
+        }
+    }
+
+    function handleStop() {
+        stopCamera();
+        cameraStarted = false;
+        autoScanning = false;
+        document.getElementById("btn-start-camera").disabled = false;
+        document.getElementById("btn-scan").disabled = true;
+        document.getElementById("btn-auto-scan").disabled = true;
+        document.getElementById("btn-stop").disabled = true;
+        document.getElementById("btn-auto-scan").textContent = "⚡ Auto Scan";
+        document.getElementById("btn-auto-scan").setAttribute("aria-pressed", "false");
+            document.getElementById("btn-auto-scan").classList.remove("btn-warning");
+        document.getElementById("btn-auto-scan").classList.add("btn-outline");
+        document.getElementById("annotated-image").style.display = "none";
+    }
+
+    // ─── Handle Scan Results ─────────────────────────────
+
+    document.addEventListener("scanResult", function(e) {
+        const result = e.detail;
+
+        if (result.status === "new_face") {
+            // Show registration form
+            const registrationForm = document.getElementById("registration-form");
+            const wasHidden = registrationForm.style.display === "none";
+            registrationForm.style.display = "block";
+            if (wasHidden) document.getElementById("register-heading").focus();
+            // Pause auto-scan while registering
+            if (autoScanning) {
+                stopScanning();
+                autoScanning = false;
+                document.getElementById("btn-auto-scan").textContent = "⚡ Auto Scan";
+                document.getElementById("btn-auto-scan").setAttribute("aria-pressed", "false");
+            document.getElementById("btn-auto-scan").classList.remove("btn-warning");
+                document.getElementById("btn-auto-scan").classList.add("btn-outline");
+            }
+        } else if (result.status === "existing") {
+            // Hide registration form
+            document.getElementById("registration-form").style.display = "none";
+            // Auto-resume scanning after 3 seconds
+            if (!autoScanning) {
+                setTimeout(() => {
+                    document.getElementById("annotated-image").style.display = "none";
+                    document.getElementById("scan-result").innerHTML = `
+                        <div class="placeholder-message">
+                            <span class="placeholder-icon">👤</span>
+                            <p>Scan a face to see results here</p>
+                        </div>`;
+                }, 3000);
+            }
+        } else {
+            // Hide registration form for no_face or error
+            document.getElementById("registration-form").style.display = "none";
+        }
+    });
+
+    // ─── Registration ────────────────────────────────────
+
+    async function handleRegister(event) {
+        event.preventDefault();
+
+        const formData = {
+            name: document.getElementById("reg-name").value,
+            roll_no: document.getElementById("reg-roll").value,
+            branch: document.getElementById("reg-branch").value,
+            section: document.getElementById("reg-section").value,
+            semester: document.getElementById("reg-semester").value
+        };
+
+        const btn = document.getElementById("btn-register");
+        btn.disabled = true;
+        btn.textContent = "⏳ Registering...";
+
+        const result = await registerStudent(formData);
+
+        btn.disabled = false;
+        btn.textContent = "✅ Register Student";
+
+        if (result && result.status === "registered") {
+            // Success — clear form and hide it
+            document.getElementById("registration-form").style.display = "none";
+            document.getElementById("reg-name").value = "";
+            document.getElementById("reg-roll").value = "";
+            document.getElementById("reg-branch").value = "";
+            document.getElementById("reg-section").value = "";
+            document.getElementById("reg-semester").value = "3";
+
+            showFlash(result.message, "success");
+
+            // Update scan result area
+            document.getElementById("scan-result").innerHTML = `
+                <div class="scan-result marked">
+                    <p class="marked">${result.message}</p>
+                    <div class="student-details">
+                        <p><strong>Name:</strong> ${result.student.name}</p>
+                        <p><strong>Roll No:</strong> ${result.student.roll_no}</p>
+                        <p><strong>Branch:</strong> ${result.student.branch}</p>
+                    </div>
+                </div>`;
+
+            loadCounts();
+
+            // Auto-resume after 3 seconds
+            setTimeout(() => {
+                document.getElementById("annotated-image").style.display = "none";
+                document.getElementById("scan-result").innerHTML = `
+                    <div class="placeholder-message">
+                        <span class="placeholder-icon">👤</span>
+                        <p>Scan a face to see results here</p>
+                    </div>`;
+            }, 3000);
+        } else if (result && result.error) {
+            showFlash(result.error, "error");
+        }
+    }
+
+    // ─── Load Counts ─────────────────────────────────────
+
+    async function loadCounts() {
+        try {
+            const resp = await fetch("/api/stats");
+            const data = await resp.json();
+            document.getElementById("student-count").textContent = data.total_students;
+            document.getElementById("face-count").textContent = data.known_faces;
+        } catch (err) {
+            console.error(err);
+        }
+    }
+</script>
+{% endblock %}

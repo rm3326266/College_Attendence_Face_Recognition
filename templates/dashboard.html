@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — AutoAttend{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>📊 Dashboard</h1>
+    <p class="subtitle">Real-time overview of today's attendance</p>
+</div>
+
+<!-- Stats Cards -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value" id="stat-total">-</div>
+        <div class="stat-label">Registered Students</div>
+    </div>
+    <div class="stat-card present">
+        <div class="stat-icon">✅</div>
+        <div class="stat-value" id="stat-present">-</div>
+        <div class="stat-label">Present Today</div>
+    </div>
+    <div class="stat-card absent">
+        <div class="stat-icon">❌</div>
+        <div class="stat-value" id="stat-absent">-</div>
+        <div class="stat-label">Absent Today</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📈</div>
+        <div class="stat-value" id="stat-rate">-</div>
+        <div class="stat-label">Attendance Rate</div>
+    </div>
+</div>
+
+<!-- Attendance Rate Bar -->
+<div class="section">
+    <div class="rate-bar-container">
+        <div class="rate-bar-track">
+            <div class="rate-bar-fill" id="rate-bar" style="width: 0%"></div>
+        </div>
+        <div class="rate-bar-labels">
+            <span id="rate-present-label">0 present</span>
+            <span id="rate-absent-label">0 absent</span>
+        </div>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <!-- Left Column -->
+    <div>
+        <!-- Time Windows -->
+        <div class="section">
+            <h2>⏰ Scanning Windows</h2>
+            <div class="windows-grid" id="windows-grid"></div>
+        </div>
+
+        <!-- Slot-wise Breakdown -->
+        <div class="section">
+            <h2>📋 Per-Slot Attendance</h2>
+            <div class="slot-breakdown" id="slot-breakdown">
+                <div class="empty-state">No data yet</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Column -->
+    <div>
+        <!-- Quick Actions -->
+        <div class="section">
+            <h2>⚡ Quick Actions</h2>
+            <div class="quick-actions">
+                <a href="/maintenance" class="action-card">
+                    <span class="action-icon">🔧</span>
+                    <div>
+                        <div class="action-title">Register Students</div>
+                        <div class="action-sub">Open maintenance mode</div>
+                    </div>
+                </a>
+                <a href="/working" class="action-card">
+                    <span class="action-icon">✅</span>
+                    <div>
+                        <div class="action-title">Start Attendance</div>
+                        <div class="action-sub">Open working mode</div>
+                    </div>
+                </a>
+                <a href="/attendance" class="action-card">
+                    <span class="action-icon">📋</span>
+                    <div>
+                        <div class="action-title">View Records</div>
+                        <div class="action-sub">Browse attendance history</div>
+                    </div>
+                </a>
+            </div>
+        </div>
+
+        <!-- Registered Students -->
+        <div class="section">
+            <h2>👥 Registered Students</h2>
+            <div class="student-list" id="student-list">
+                <div class="empty-state">No students registered yet</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function loadDashboard() {
+        try {
+            const [statsResp, studentsResp] = await Promise.all([
+                fetch("/api/stats"),
+                fetch("/api/students")
+            ]);
+            const stats = await statsResp.json();
+            const studentsData = await studentsResp.json();
+
+            // Stats cards
+            document.getElementById("stat-total").textContent = stats.total_students;
+            document.getElementById("stat-present").textContent = stats.present_today;
+            document.getElementById("stat-absent").textContent = stats.absent_today;
+
+            const rate = stats.total_students > 0
+                ? Math.round((stats.present_today / stats.total_students) * 100)
+                : 0;
+            document.getElementById("stat-rate").textContent = rate + "%";
+
+            // Rate bar
+            document.getElementById("rate-bar").style.width = rate + "%";
+            document.getElementById("rate-present-label").textContent = `${stats.present_today} present`;
+            document.getElementById("rate-absent-label").textContent = `${stats.absent_today} absent`;
+
+            // Time windows
+            const grid = document.getElementById("windows-grid");
+            grid.innerHTML = stats.windows.map(w => `
+                <div class="window-card ${w.status}">
+                    <div class="window-time">${w.label}</div>
+                    <div class="window-status">${
+                        w.status === "active" ? "🟢 ACTIVE" :
+                        w.status === "completed" ? "✅ Done" : "⏳ Upcoming"
+                    }</div>
+                </div>
+            `).join("");
+
+            // Slot breakdown with progress bars
+            const breakdown = document.getElementById("slot-breakdown");
+            if (stats.total_students === 0) {
+                breakdown.innerHTML = '<div class="empty-state">Register students first to see attendance</div>';
+            } else {
+                breakdown.innerHTML = stats.windows.map(w => {
+                    const slotStat = stats.slot_stats.find(s => s.time_slot === w.label);
+                    const count = slotStat ? slotStat.count : 0;
+                    const pct = Math.round((count / stats.total_students) * 100);
+                    return `
+                        <div class="slot-row">
+                            <div class="slot-row-label">
+                                <span>${w.label}</span>
+                                <span class="slot-row-count">${count}/${stats.total_students}</span>
+                            </div>
+                            <div class="slot-progress-track">
+                                <div class="slot-progress-fill ${w.status}" style="width: ${pct}%"></div>
+                            </div>
+                        </div>`;
+                }).join("");
+            }
+
+            // Student list
+            const list = document.getElementById("student-list");
+            if (studentsData.students.length === 0) {
+                list.innerHTML = '<div class="empty-state">No students registered yet. <a href="/maintenance">Register now →</a></div>';
+            } else {
+                list.innerHTML = studentsData.students.slice(0, 8).map(s => `
+                    <div class="student-row">
+                        <div class="student-avatar">${s.name.charAt(0)}</div>
+                        <div class="student-info">
+                            <div class="student-name">${s.name}</div>
+                            <div class="student-meta">${s.roll_no} · ${s.branch}${s.section ? ' · ' + s.section : ''}</div>
+                        </div>
+                    </div>
+                `).join("") + (studentsData.count > 8
+                    ? `<div class="student-row-more">+${studentsData.count - 8} more</div>` : "");
+            }
+
+        } catch (err) {
+            console.error("Dashboard load error:", err);
+        }
+    }
+
+    loadDashboard();
+    setInterval(loadDashboard, 5000);
+</script>
+{% endblock %}

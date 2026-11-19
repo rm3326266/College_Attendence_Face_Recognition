@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Attendance System{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <!-- Navigation -->
+    <nav class="navbar" aria-label="Main navigation">
+        <div class="nav-brand">
+            <span class="nav-logo">🎓</span>
+            <span class="nav-title">AutoAttend</span>
+        </div>
+        <div class="nav-links" aria-label="Site pages">
+            {% if g.user.role == 'admin' %}
+            <a href="/" {% if request.path == '/' %}aria-current="page"{% endif %} class="nav-link {% if request.path == '/' %}active{% endif %}">
+                📊 Dashboard
+            </a>
+            <a href="/maintenance" {% if request.path == '/maintenance' %}aria-current="page"{% endif %} class="nav-link {% if request.path == '/maintenance' %}active{% endif %}">
+                🔧 Maintenance
+            </a>
+            {% endif %}
+            {% if g.user.role in ('admin', 'teacher') %}
+            <a href="/working" {% if request.path == '/working' %}aria-current="page"{% endif %} class="nav-link {% if request.path == '/working' %}active{% endif %}">
+                ✅ Working
+            </a>
+            {% endif %}
+            {% if g.user.role in ('admin', 'student') %}
+            <a href="/attendance" {% if request.path == '/attendance' %}aria-current="page"{% endif %} class="nav-link {% if request.path == '/attendance' %}active{% endif %}">
+                📋 Attendance
+            </a>
+            {% endif %}
+            <form action="{{ url_for('logout') }}" method="post" style="display:inline">
+                <button type="submit" class="nav-link" style="background:none;border:0;cursor:pointer">Logout ({{ g.user.username }})</button>
+            </form>
+        </div>
+        {% if g.user.role == 'admin' %}
+        <div class="nav-mode">
+            <span class="mode-label">Mode:</span>
+            <button id="mode-toggle" type="button" aria-label="Switch operating mode. Current mode: maintenance" class="mode-btn maintenance" onclick="toggleMode()">
+                🔧 MAINTENANCE
+            </button>
+        </div>
+        {% endif %}
+    </nav>
+
+    <!-- Flash Messages -->
+    <div id="flash-container" role="status" aria-live="polite" aria-atomic="false"></div>
+
+    <!-- Main Content -->
+    <main class="container" id="main-content" tabindex="-1">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>AutoAttend — Automatic Attendance System Prototype</p>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="{{ url_for('static', filename='js/camera.js') }}"></script>
+    <script>
+        // ─── Mode Toggle ─────────────────────────────────
+        let appMode = "{{ mode }}";
+
+        async function toggleMode() {
+            const newMode = appMode === "maintenance" ? "working" : "maintenance";
+            const result = await switchMode(newMode);
+            if (result) {
+                appMode = result.mode;
+                updateModeUI();
+                showFlash(`Switched to ${appMode.toUpperCase()} mode`, "success");
+            }
+        }
+
+        function updateModeUI() {
+            const btn = document.getElementById("mode-toggle");
+            if (appMode === "maintenance") {
+                btn.textContent = "🔧 MAINTENANCE";
+                btn.className = "mode-btn maintenance";
+                btn.setAttribute("aria-label", "Switch operating mode. Current mode: maintenance");
+            } else {
+                btn.textContent = "✅ WORKING";
+                btn.className = "mode-btn working";
+                btn.setAttribute("aria-label", "Switch operating mode. Current mode: working");
+            }
+        }
+
+        function showFlash(message, type = "info") {
+            const container = document.getElementById("flash-container");
+            const flash = document.createElement("div");
+            flash.className = `flash flash-${type}`;
+            if (type === "error") flash.setAttribute("role", "alert");
+            flash.textContent = message;
+            container.appendChild(flash);
+            setTimeout(() => flash.remove(), 4000);
+        }
+
+        // Set initial mode
+        updateModeUI();
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
